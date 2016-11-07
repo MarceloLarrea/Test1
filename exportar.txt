@@ -1,0 +1,174 @@
+PROCEDURE push_BTN_exportar IS
+     v_filtros  varchar2(32767);
+     v_opciones varchar2(32767);
+
+     G_TIPO     NUMBER := NVL(SVR_G02.GET_VAL('G08000','XML_TIPO'),1); -- 1:XML, 2:XLSX
+     G_XLSX_DIR VARCHAR2(2000) := NVL(SVR_G02.GET_VAL('G08000','XLSX_DIR'),'UTL_FILE_DIR');
+     G_XML_DOWN VARCHAR2(2000) := SVR_G02.GET_VAL('G08000','XML_DOWN');
+     G_XML_CTIT VARCHAR2(80) := NVL(SVR_G02.GET_VAL('G08000','XML_CTIT'),'D3D3D3');
+
+     V_USR       VARCHAR2(2000) := GET_APPLICATION_PROPERTY(USERNAME);
+     V_PATH      VARCHAR2(2000);
+     V_SESSION   NUMBER := GLX.SessionID()*1000000+TO_NUMBER(TO_CHAR(SYSDATE,'HH24MISS'));
+     V_ERR       SVR_G03.LISTA_ERRORES_TYPE;
+     V_DIR       VARCHAR2(2000) := NVL(SVR_G02.GET_VAL('G08000','XML_DIR_S'),'xmlblock');
+     V_OPC       FMSG.BUTTON_TYPE;
+     V_NAME      VARCHAR2(80);
+     PL_ID       PARAMLIST;
+     
+     V_XLSX_ID   number(10);
+     v_cortes    varchar2(10);
+     v_err_msg   varchar2(400);
+
+
+
+-- Usada para seleccionar los cortes que deseo usar
+PROCEDURE SeleccionCortes(p_cortes out varchar2) IS
+I               INTEGER;
+v_tabla_in      SVR_GLX.SeleccionMultiple$rec_tab; -- Tabla de Entrada
+v_tabla_out     SVR_GLX.SeleccionMultiple$rec_tab; -- Tabla de Salida
+BEGIN
+  /* Se Inicializan tablas para pasar a GLX.SeleccionMultiple */
+  v_tabla_in.delete;
+  v_tabla_out.delete;
+
+  /* Se levantan las tasas */
+  I:=0;
+
+        I:=I+1;
+        v_tabla_in(i).CODIGO      := 'P';
+        v_tabla_in(i).DESCRIPCION := 'Titular del Imponible';
+        I:=I+1;
+        v_tabla_in(i).CODIGO      := 'X';
+        v_tabla_in(i).DESCRIPCION := 'Tipo de Imponible';
+        I:=I+1;
+        v_tabla_in(i).CODIGO      := 'I';
+        v_tabla_in(i).DESCRIPCION := 'Imponible';
+        I:=I+1;
+        v_tabla_in(i).CODIGO      := 'T';
+        v_tabla_in(i).DESCRIPCION := 'Tributo';
+        I:=I+1;
+        v_tabla_in(i).CODIGO      := 'Y';
+        v_tabla_in(i).DESCRIPCION := 'Año de Vencimiento';
+        I:=I+1;
+        v_tabla_in(i).CODIGO      := 'R';
+        v_tabla_in(i).DESCRIPCION := 'Registro en Cuenta Corriente';
+        I:=I+1;
+        v_tabla_in(i).CODIGO      := 'C';
+        v_tabla_in(i).DESCRIPCION := 'Concepto en Cuenta Corriente';
+
+ /* Seleccion de tributaosr */
+  if  GLX.SeleccionMultiple ('Seleccion de Opciones de Corte'
+                             ,v_tabla_in
+                             ,v_tabla_out
+                             ,TRUE
+                             ,FALSE
+                             ,'Seleccione los cortes deseados para la Exportación'
+                             ,'Cortes Seleccionados'
+                             ,80
+                             ,18
+                             ,0
+                             ,0
+                             ,10
+                             ,35)
+   then
+          if v_tabla_out.exists(1) THEN
+             for i in v_tabla_out.FIRST..v_tabla_out.LAST loop
+             	   p_cortes := p_cortes ||v_tabla_out(i).CODIGO; 
+             end loop;
+          end if;
+   end if;       
+
+END;
+
+
+      
+BEGIN
+
+     IF NOT SVR_G03.PUEDE
+            (P_USR      => V_USR
+            ,P_OBJ_TIPO => 'PRG'
+            ,P_OBJ      => 'R1A3185'
+            ,P_ACC      => 'C'
+            ,ERR        => V_ERR
+            ) THEN
+        MESSAGE('Error: No tiene permiso para exportar deuda: '||'R1A3185');
+        RAISE FORM_TRIGGER_FAILURE;
+     END IF;
+
+     V_PATH := SVR_G02.GET_VAL('G08000','XML_IAS_P');
+     IF V_PATH IS NULL THEN
+        MESSAGE('Error: Debe configurar el parámetro XML_IAS_P en la tabla de parámetros G08000');
+        RAISE FORM_TRIGGER_FAILURE;
+     END IF;
+
+
+     SeleccionCortes(v_cortes);
+     if v_cortes is null then
+        MESSAGE('Error: Debe indicar al menos un corte para generar la exportación.');
+        RAISE FORM_TRIGGER_FAILURE;
+     end if;
+
+     IF FMSG.SN('Exportar Excel','La exportación de Cuenta Corriente puede demorar varios minutos en procesarse. No cierre la ventana de ejecución mientras se está calculando. ¿Confirma la Exportación?') != FMSG.JF_BOTON_SI THEN
+     	  return;
+     END IF;
+     
+        IF G_TIPO = 1 THEN
+           V_NAME := V_SESSION||'.xls';
+        ELSIF G_TIPO = 2 THEN
+           V_NAME := V_SESSION||'.xlsx';
+        END IF;
+
+        SELECT TAS_XLSX_SEQ.NEXTVAL INTO V_XLSX_ID FROM DUAL;
+
+     v_filtros  := pck.ArmarCadenaFiltros;
+     v_opciones := pck.ArmarCadenaOpciones (null);
+
+           IF G_TIPO = 1 THEN
+                if not SVR_R1A$DEUDORES2XLS      ( p_filtros  => v_filtros
+                                                 , p_opciones => v_opciones
+                                                 , p_titulo   => 'Exportación de Deudores'
+                                                 , p_corte    => v_cortes
+                                                 , p_file_name => V_PATH||V_NAME
+                                                 , p_XLSX_ID  => V_XLSX_ID
+                                                 , p_err      => v_err_msg
+                                                 ) then
+                   MESSAGE('Error: '||v_err_msg);
+                   RAISE FORM_TRIGGER_FAILURE;
+                end if;                                                 
+           ELSIF G_TIPO = 2 THEN
+                if not SVR_R1A$DEUDORES2XLS      ( p_filtros  => v_filtros
+                                                 , p_opciones => v_opciones
+                                                 , p_titulo   => 'Exportación de Deudores'
+                                                 , p_corte    => v_cortes
+                                                 , p_file_name => V_NAME
+                                                 , p_XLSX_ID  => V_XLSX_ID
+                                                 , p_err      => v_err_msg
+                                                 ) then
+                   MESSAGE('Error: '||v_err_msg);
+                   RAISE FORM_TRIGGER_FAILURE;
+                end if;                                                 
+           END IF;
+
+        IF G_XML_DOWN = 'WEBUTIL' THEN
+           PL_ID :=  GET_PARAMETER_LIST('TEMP');
+           IF NOT ID_NULL(PL_ID) THEN
+              DESTROY_PARAMETER_LIST(PL_ID);
+           END IF;
+           PL_ID := CREATE_PARAMETER_LIST('TEMP');
+           ADD_PARAMETER(PL_ID,'FILTRO_TAS_XLSX_ID',TEXT_PARAMETER,V_XLSX_ID);
+           ADD_PARAMETER(PL_ID,'FILTRO_FILENAME',TEXT_PARAMETER,V_NAME);
+           CALL_FORM('AS_XLSX',NO_HIDE,NO_REPLACE,NO_QUERY_ONLY,SHARE_LIBRARY_DATA,PL_ID);
+           IF NOT FORM_SUCCESS THEN
+              MESSAGE('Error: Unable to call module AS_XLSX');
+              RAISE FORM_TRIGGER_FAILURE;
+           END IF;
+           
+           as_xlsx.deleteID(V_XLSX_ID);
+        ELSIF G_XML_DOWN IS NOT NULL THEN
+           GLX.SHOW_LINK(REPLACE(REPLACE(G_XML_DOWN,'%%FILE%%',V_NAME),'%%ID%%',V_XLSX_ID));
+        ELSE
+           GLX.SHOW_LINK('../'||V_DIR||'/'||V_NAME);
+        END IF;
+
+END;
